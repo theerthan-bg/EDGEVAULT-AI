@@ -38,3 +38,6 @@ Cloud AI
 Internet Lost
    ↓
 AI Memory Unavailable ❌
+
+
+## some more information mantioned on other respiratory 
