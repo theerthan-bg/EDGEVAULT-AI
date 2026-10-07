@@ -1,0 +1,102 @@
+import { useState, useEffect, useCallback } from 'react';
+import type { Page } from './types';
+import { useSystemState } from './hooks/useSystemState';
+import { useLiveDemo } from './hooks/useLiveDemo';
+import { BootSequence } from './components/BootSequence';
+import { AppShell } from './components/AppShell';
+import { CommandCenter } from './pages/CommandCenter';
+import { MemoryExplorer } from './pages/MemoryExplorer';
+import { SemanticSearch } from './pages/SemanticSearch';
+import { SyncCenter } from './pages/SyncCenter';
+import { Conflicts } from './pages/Conflicts';
+import { ActivityLog } from './pages/ActivityLog';
+import { Architecture } from './pages/Architecture';
+import { SystemPage } from './pages/SystemPage';
+
+function usePrefersReducedMotion() {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReduced(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setReduced(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+  return reduced;
+}
+
+function App() {
+  const [page, setPage] = useState<Page>('command');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [demoPhase, setDemoPhase] = useState<{ phase: string; desc: string }>({ phase: '', desc: '' });
+  const reducedMotion = usePrefersReducedMotion();
+
+  const sys = useSystemState();
+  const { runDemo, cancelDemo } = useLiveDemo(sys, sys.state);
+
+  const handleStartDemo = useCallback(() => {
+    setPage('command');
+    runDemo((phase, desc) => setDemoPhase({ phase, desc }));
+  }, [runDemo]);
+
+  const handleToggleOnline = useCallback(() => {
+    sys.setOnline(!sys.state.online);
+  }, [sys]);
+
+  if (!sys.state.introComplete) {
+    return <BootSequence onComplete={() => sys.setIntroComplete(true)} reducedMotion={reducedMotion} />;
+  }
+
+  return (
+    <>
+      <AppShell
+        current={page}
+        onNavigate={setPage}
+        online={sys.state.online}
+        lastSync={sys.state.lastSync}
+        syncState={sys.state.syncState}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen(prev => !prev)}
+        onCloseSidebar={() => setSidebarOpen(false)}
+      >
+        {page === 'command' && (
+          <CommandCenter
+            state={sys.state}
+            reducedMotion={reducedMotion}
+            onToggleOnline={handleToggleOnline}
+            onRunSync={sys.runSync}
+            onStartDemo={handleStartDemo}
+          />
+        )}
+        {page === 'memory' && <MemoryExplorer state={sys.state} onCreateMemory={sys.createMemory} />}
+        {page === 'search' && <SemanticSearch state={sys.state} />}
+        {page === 'sync' && <SyncCenter state={sys.state} onRunSync={sys.runSync} />}
+        {page === 'conflicts' && <Conflicts state={sys.state} onResolve={sys.resolveConflict} />}
+        {page === 'activity' && <ActivityLog state={sys.state} />}
+        {page === 'architecture' && <Architecture state={sys.state} />}
+        {page === 'system' && <SystemPage state={sys.state} />}
+      </AppShell>
+
+      {/* Live Demo overlay */}
+      {sys.state.demoActive && demoPhase.phase && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 ev-panel-solid border border-cyan-500/30 ev-glow-cyan rounded-lg px-5 py-3 max-w-md w-full mx-4 animate-slide-up">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] font-mono-tech text-cyan-400 tracking-wider animate-blink">{demoPhase.phase}</span>
+            <button
+              onClick={cancelDemo}
+              className="text-[10px] font-mono-tech text-slate-500 hover:text-red-400 transition-colors"
+            >
+              STOP DEMO
+            </button>
+          </div>
+          <p className="text-xs text-slate-300">{demoPhase.desc}</p>
+          <div className="mt-2 h-0.5 bg-[#1a2540] rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 animate-pulse-slow" style={{ width: demoPhase.phase === 'COMPLETE' ? '100%' : '60%' }} />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+export default App;
