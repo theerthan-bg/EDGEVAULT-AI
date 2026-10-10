@@ -1,0 +1,148 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+import type { Memory, SyncItem, Conflict, ActivityLogEntry, MemoryCategory, SyncState } from '../types';
+import { initialMemories, initialSyncQueue, initialConflicts, initialActivity } from '../lib/mockData';
+
+let idCounter = 100;
+const nextId = (prefix: string) => `${prefix}-${String(++idCounter).padStart(3, '0')}`;
+
+export interface SystemState {
+  online: boolean;
+  syncState: SyncState;
+  memories: Memory[];
+  syncQueue: SyncItem[];
+  conflicts: Conflict[];
+  activity: ActivityLogEntry[];
+  lastSync: number | null;
+  searchLatency: number;
+  demoActive: boolean;
+  introComplete: boolean;
+}
+
+export function useSystemState() {
+  const [online, setOnline] = useState(true);
+  const [syncState, setSyncState] = useState<SyncState>('IDLE');
+  const [memories, setMemories] = useState<Memory[]>(initialMemories);
+  const [syncQueue, setSyncQueue] = useState<SyncItem[]>(initialSyncQueue);
+  const [conflicts, setConflicts] = useState<Conflict[]>(initialConflicts);
+  const [activity, setActivity] = useState<ActivityLogEntry[]>(initialActivity);
+  const [lastSync, setLastSync] = useState<number | null>(Date.now() - 120000);
+  const [searchLatency] = useState(23);
+  const [demoActive, setDemoActive] = useState(false);
+  const [introComplete, setIntroComplete] = useState(false);
+  const activityRef = useRef(activity);
+  activityRef.current = activity;
+
+  const log = useCallback((entry: Omit<ActivityLogEntry, 'id' | 'timestamp'>) => {
+    setActivity(prev => [
+      { ...entry, id: nextId('LOG'), timestamp: Date.now() },
+      ...prev,
+    ].slice(0, 200));
+  }, []);
+
+  const setOnlineState = useCallback((val: boolean) => {
+    setOnline(val);
+    if (val) {
+      log({ event: 'CONNECTION_RESTORED', device: 'SYSTEM', memoryId: null, status: 'SUCCESS', message: 'Network connectivity restored' });
+    } else {
+      log({ event: 'NETWORK_OFFLINE', device: 'SYSTEM', memoryId: null, status: 'WARNING', message: 'Network unavailable — continuing with local intelligence' });
+    }
+  }, [log]);
+
+  const createMemory = useCallback((text: string, category: MemoryCategory, tags: string[], device: string, source: string): Memory => {
+    const id = nextId('MEM');
+    const ts = Date.now();
+    let syncStatus: Memory['syncStatus'];
+    if (category === 'PRIVATE') {
+      syncStatus = 'LOCAL ONLY';
+    } else if (online) {
+      syncStatus = 'PENDING SYNC';
+    } else {
+      syncStatus = 'PENDING SYNC';
+    }
+
+    const mem: Memory = {
+      id, text, category, source, device,
+      createdAt: ts, updatedAt: ts,
+      syncStatus, tags,
+    };
+    setMemories(prev => [mem, ...prev]);
+
+    log({ event: 'MEMORY_CREATED', device, memoryId: id, status: 'SUCCESS', message: `Memory stored in Qdrant Edge [${category}]` });
+    log({ event: 'EMBEDDING_GENERATED', device, memoryId: id, status: 'INFO', message: '384-dim vector generated via BAAI/bge-small-en-v1.5' });
+    log({ event: 'LOCAL_VECTOR_INSERTED', device, memoryId: id, status: 'SUCCESS', message: 'Vector inserted into local collection' });
+    log({ event: 'POLICY_EVALUATED', device, memoryId: id, status: 'INFO', message: `Policy: ${category} → ${category === 'PRIVATE' ? 'LOCAL ONLY' : category === 'HIGH PRIORITY' ? 'PRIORITY SYNC' : 'SYNC WHEN ONLINE'}` });
+
+    if (category !== 'PRIVATE') {
+      const sq: SyncItem = {
+        id: nextId('SQ'), memoryId: id, text, category,
+        priority: category === 'HIGH PRIORITY' ? 'HIGH' : 'MEDIUM',
+        status: 'PENDING', retryCount: 0,
+        createdAt: ts, lastAttempt: null,
+      };
+      setSyncQueue(prev => [sq, ...prev]);
+      log({ event: 'SYNC_QUEUED', device, memoryId: id, status: 'INFO', message: category === 'HIGH PRIORITY' ? 'Memory queued for priority sync' : 'Memory queued for sync' });
+    }
+
+    return mem;
+  }, [online, log]);
+
+  const resolveConflict = useCallback((conflictId: string, resolution: 'LOCAL' | 'CLOUD' | 'MERGE') => {
+    setConflicts(prev => prev.map(c => c.id === conflictId ? { ...c, status: 'RESOLVED', resolution } : c));
+    log({ event: 'CONFLICT_DETECTED', device: 'SYSTEM', memoryId: null, status: 'INFO', message: `Conflict resolved: KEEP ${resolution}` });
+  }, [log]);
+
+  const runSync = useCallback(() => {
+    if (!online) return;
+    setSyncState('SYNCING');
+    log({ event: 'SYNC_STARTED', device: 'SYSTEM', memoryId: null, status: 'INFO', message: 'Processing synchronization queue' });
+
+    setSyncQueue(prev => {
+      const eligible = prev.filter(s => s.status === 'PENDING' || s.status === 'READY' || s.status === 'FAILED');
+      return prev.map(s => {
+        if (s.status === 'PENDING' || s.status === 'READY') {
+          return { ...s, status: 'SYNCING' as const, lastAttempt: Date.now() };
+        }
+        return s;
+      });
+    });
+
+    setTimeout(() => {
+      setSyncQueue(prev => prev.map(s => {
+        if (s.status === 'SYNCING') {
+          log({ event: 'SYNC_COMPLETED', device: s.memoryId.includes('NODE-02') ? 'EDGE-NODE-02' : 'EDGE-NODE-01', memoryId: s.memoryId, status: 'SUCCESS', message: 'Synced to Qdrant Cloud' });
+          return { ...s, status: 'SYNCED' as const };
+        }
+        return s;
+      }));
+      setMemories(prev => prev.map(m => {
+        if (m.syncStatus === 'PENDING SYNC') return { ...m, syncStatus: 'SYNCED' as const, updatedAt: Date.now() };
+        return m;
+      }));
+      setLastSync(Date.now());
+      setSyncState('IDLE');
+      log({ event: 'SYNC_COMPLETED', device: 'SYSTEM', memoryId: null, status: 'SUCCESS', message: 'All eligible memories synced to Qdrant Cloud' });
+    }, 2000);
+  }, [online, log]);
+
+  const resetDemo = useCallback(() => {
+    setMemories(initialMemories);
+    setSyncQueue(initialSyncQueue);
+    setConflicts(initialConflicts);
+    setActivity(initialActivity);
+    setOnline(true);
+    setSyncState('IDLE');
+    setLastSync(Date.now() - 120000);
+    setDemoActive(false);
+  }, []);
+
+  const state: SystemState = {
+    online, syncState, memories, syncQueue, conflicts, activity,
+    lastSync, searchLatency, demoActive, introComplete,
+  };
+
+  return {
+    state, log, setOnline: setOnlineState, createMemory,
+    resolveConflict, runSync, resetDemo,
+    setDemoActive, setIntroComplete,
+  };
+}
