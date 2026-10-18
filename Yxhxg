@@ -1,0 +1,67 @@
+conflicts: Conflict[];
+  activity: ActivityLogEntry[];
+  lastSync: number | null;
+  searchLatency: number;
+  demoActive: boolean;
+  introComplete: boolean;
+}
+
+export function useSystemState() {
+  const [online, setOnline] = useState(true);
+  const [syncState, setSyncState] = useState<SyncState>('IDLE');
+  const [memories, setMemories] = useState<Memory[]>(initialMemories);
+  const [syncQueue, setSyncQueue] = useState<SyncItem[]>(initialSyncQueue);
+  const [conflicts, setConflicts] = useState<Conflict[]>(initialConflicts);
+  const [activity, setActivity] = useState<ActivityLogEntry[]>(initialActivity);
+  const [lastSync, setLastSync] = useState<number | null>(Date.now() - 120000);
+  const [searchLatency] = useState(23);
+  const [demoActive, setDemoActive] = useState(false);
+  const [introComplete, setIntroComplete] = useState(false);
+  const activityRef = useRef(activity);
+  activityRef.current = activity;
+
+  const log = useCallback((entry: Omit<ActivityLogEntry, 'id' | 'timestamp'>) => {
+    setActivity(prev => [
+      { ...entry, id: nextId('LOG'), timestamp: Date.now() },
+      ...prev,
+    ].slice(0, 200));
+  }, []);
+
+  const setOnlineState = useCallback((val: boolean) => {
+    setOnline(val);
+    if (val) {
+      log({ event: 'CONNECTION_RESTORED', device: 'SYSTEM', memoryId: null, status: 'SUCCESS', message: 'Network connectivity restored' });
+    } else {
+      log({ event: 'NETWORK_OFFLINE', device: 'SYSTEM', memoryId: null, status: 'WARNING', message: 'Network unavailable — continuing with local intelligence' });
+    }
+  }, [log]);
+
+  const createMemory = useCallback((text: string, category: MemoryCategory, tags: string[], device: string, source: string): Memory => {
+    const id = nextId('MEM');
+    const ts = Date.now();
+    let syncStatus: Memory['syncStatus'];
+    if (category === 'PRIVATE') {
+      syncStatus = 'LOCAL ONLY';
+    } else if (online) {
+      syncStatus = 'PENDING SYNC';
+    } else {
+      syncStatus = 'PENDING SYNC';
+    }
+
+    const mem: Memory = {
+      id, text, category, source, device,
+      createdAt: ts, updatedAt: ts,
+      syncStatus, tags,
+    };
+    setMemories(prev => [mem, ...prev]);
+
+    log({ event: 'MEMORY_CREATED', device, memoryId: id, status: 'SUCCESS', message: `Memory stored in Qdrant Edge [${category}]` });
+    log({ event: 'EMBEDDING_GENERATED', device, memoryId: id, status: 'INFO', message: '384-dim vector generated via BAAI/bge-small-en-v1.5' });
+    log({ event: 'LOCAL_VECTOR_INSERTED', device, memoryId: id, status: 'SUCCESS', message: 'Vector inserted into local collection' });
+    log({ event: 'POLICY_EVALUATED', device, memoryId: id, status: 'INFO', message: `Policy: ${category} → ${category === 'PRIVATE' ? 'LOCAL ONLY' : category === 'HIGH PRIORITY' ? 'PRIORITY SYNC' : 'SYNC WHEN ONLINE'}` });
+
+    if (category !== 'PRIVATE') {
+      const sq: SyncItem = {
+        id: nextId('SQ'), memoryId: id, text, category,
+        priority: category === 'HIGH PRIORITY' ? 'HIGH' : 'MEDIUM',
+        status: 
